@@ -1935,7 +1935,24 @@ OnLoaded:
 
         '获取当前支持库列表
         Log("[Minecraft] 获取支持库列表：" & Instance.Name)
-        Dim result = McLibListGetWithJson(Instance.JsonObject, TargetInstance:=Instance)
+        Dim cleanroomLibOrder As List(Of String) = GetCleanroomLibraryNames(Instance)
+        Dim cleanroomLibSet As HashSet(Of String) = Nothing
+        If cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any Then
+            cleanroomLibSet = New HashSet(Of String)(cleanroomLibOrder, StringComparer.OrdinalIgnoreCase)
+        End If
+        Dim result = McLibListGetWithJson(Instance.JsonObject, TargetInstance:=Instance, CleanroomPreferredLibNames:=cleanroomLibSet)
+        If cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any Then
+            Dim ordered As New List(Of McLibToken)
+            Dim remaining As New List(Of McLibToken)(result)
+            For Each libName In cleanroomLibOrder
+                Dim token = remaining.FirstOrDefault(Function(t) String.Equals(t.OriginalName, libName, StringComparison.OrdinalIgnoreCase))
+                If token Is Nothing Then Continue For
+                ordered.Add(token)
+                remaining.Remove(token)
+            Next
+            ordered.AddRange(remaining)
+            result = ordered
+        End If
 
         '需要添加原版 Jar
         If IncludeInstanceJar Then
@@ -1980,9 +1997,40 @@ OnLoaded:
         Return result
     End Function
     ''' <summary>
+    ''' 获取 Cleanroom 实例的支持库清单（按原始顺序）。
+    ''' </summary>
+    Private Function GetCleanroomLibraryNames(instance As McInstance) As List(Of String)
+        Try
+            If instance Is Nothing OrElse Not instance.Info.HasCleanroom Then Return Nothing
+            Dim cleanroomVersion As String = instance.Info.Cleanroom
+            If String.IsNullOrWhiteSpace(cleanroomVersion) OrElse cleanroomVersion = "未知版本" Then Return Nothing
+            Dim versionsRoot = System.IO.Path.GetDirectoryName(instance.PathInstance.TrimEnd("\"c))
+            If String.IsNullOrWhiteSpace(versionsRoot) Then Return Nothing
+            Dim cleanroomFolder = System.IO.Path.Combine(versionsRoot, "cleanroom-" & cleanroomVersion)
+            Dim cleanroomJsonPath = System.IO.Path.Combine(cleanroomFolder, "cleanroom-" & cleanroomVersion & ".json")
+            If Not File.Exists(cleanroomJsonPath) Then
+                Log($"[Minecraft] Cleanroom 库列表 JSON 不存在：{cleanroomJsonPath}", LogLevel.Debug)
+                Return Nothing
+            End If
+            Dim cleanroomJson = GetJson(ReadFile(cleanroomJsonPath))
+            Dim libs = TryCast(cleanroomJson("libraries"), JArray)
+            If libs Is Nothing Then Return Nothing
+            Dim result As New List(Of String)
+            For Each lib As JObject In libs.Children
+                Dim name = lib("name")?.ToString
+                If String.IsNullOrWhiteSpace(name) Then Continue For
+                result.Add(name)
+            Next
+            Return result
+        Catch ex As Exception
+            Log(ex, $"[Minecraft] 读取 Cleanroom 库列表失败（{If(instance?.Name, "Nothing")}）", LogLevel.Debug)
+            Return Nothing
+        End Try
+    End Function
+    ''' <summary>
     ''' 获取 Minecraft 某一实例忽视继承的支持库列表，即结果中没有继承项。
     ''' </summary>
-    Public Function McLibListGetWithJson(JsonObject As JObject, Optional KeepSameNameDifferentVersionResult As Boolean = False, Optional CustomMcFolder As String = Nothing, Optional TargetInstance As McInstance = Nothing) As List(Of McLibToken)
+    Public Function McLibListGetWithJson(JsonObject As JObject, Optional KeepSameNameDifferentVersionResult As Boolean = False, Optional CustomMcFolder As String = Nothing, Optional TargetInstance As McInstance = Nothing, Optional CleanroomPreferredLibNames As HashSet(Of String) = Nothing) As List(Of McLibToken)
         CustomMcFolder = If(CustomMcFolder, McFolderSelected)
         Dim BasicArray As New List(Of McLibToken)
 
@@ -2070,6 +2118,7 @@ OnLoaded:
             'D:\Minecraft\test\libraries\com\google\guava\guava\31.1-jre\guava-31.1-jre.jar
             Return GetFolderNameFromPath(GetPathFromFullPath(Token.LocalPath))
         End Function
+        Dim hasCleanroomPreference As Boolean = CleanroomPreferredLibNames IsNot Nothing AndAlso CleanroomPreferredLibNames.Count > 0
         For i = 0 To BasicArray.Count - 1
             Dim Key As String = BasicArray(i).Name & BasicArray(i).IsNatives.ToString
             If ResultArray.ContainsKey(Key) Then
@@ -2080,6 +2129,17 @@ OnLoaded:
                     ResultArray.Add(Key & GetUuid(), BasicArray(i))
                 Else
                     Log($"[Minecraft] 发现重复的支持库：{BasicArray(i)} ({BasicArrayVersion}) 与 {ResultArray(Key)} ({ResultArrayVersion})，已忽略其中之一")
+                    If hasCleanroomPreference Then
+                        Dim basicIsCleanroom = CleanroomPreferredLibNames.Contains(BasicArray(i).OriginalName)
+                        Dim resultIsCleanroom = CleanroomPreferredLibNames.Contains(ResultArray(Key).OriginalName)
+                        If basicIsCleanroom AndAlso Not resultIsCleanroom Then
+                            ResultArray(Key) = BasicArray(i)
+                            Log($"[Minecraft] Cleanroom 优先支持库：{BasicArray(i).OriginalName}", LogLevel.Debug)
+                            Continue For
+                        ElseIf resultIsCleanroom AndAlso Not basicIsCleanroom Then
+                            Continue For
+                        End If
+                    End If
                     If CompareVersionGe(BasicArrayVersion, ResultArrayVersion) Then
                         ResultArray(Key) = BasicArray(i)
                     End If
