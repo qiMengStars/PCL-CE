@@ -1936,42 +1936,66 @@ OnLoaded:
         '获取当前支持库列表
         Log("[Minecraft] 获取支持库列表：" & Instance.Name)
         Dim cleanroomLibOrder As List(Of String) = GetCleanroomLibraryNames(Instance)
+        Dim hasCleanroomLibList As Boolean = cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any
         Dim cleanroomLibSet As HashSet(Of String) = Nothing
-        If cleanroomLibOrder IsNot Nothing Then
+        If hasCleanroomLibList Then
             cleanroomLibSet = New HashSet(Of String)(cleanroomLibOrder, StringComparer.OrdinalIgnoreCase)
         End If
         Dim result = McLibListGetWithJson(Instance.JsonObject, TargetInstance:=Instance, CleanroomPreferredLibNames:=cleanroomLibSet)
-        If Instance.Info.HasCleanroom Then
-            Dim conflictGroups = GetCleanroomConflictGroups(cleanroomLibSet)
-            Dim filtered As New List(Of McLibToken)
+        Dim fixCleanroomLibCrash As Boolean = ShouldFixCleanroomLibCrash(Instance)
+
+        'Cleanroom 0.3.0+：移除已知会导致崩溃的依赖库（见 #1402）。
+        '注意：此修复不依赖 cleanroom-<ver>.json 的存在，否则会在部分安装布局下失效。
+        If fixCleanroomLibCrash Then
+            Dim canReplaceConflictLibs As Boolean = hasCleanroomLibList
+            Dim cleanroomConflictKeys As HashSet(Of String) = Nothing
+            If canReplaceConflictLibs Then
+                cleanroomConflictKeys = GetCleanroomConflictKeys(cleanroomLibSet)
+            End If
+
+            Dim filtered As New List(Of McLibToken)(result.Count)
             For Each token In result
+                If token Is Nothing Then Continue For
                 If IsCleanroomExcludedFile(token) Then
                     Log($"[Minecraft] Cleanroom 排除支持库：{token.LocalPath}", LogLevel.Debug)
                     Continue For
                 End If
-                Dim groupName As String = GetLibraryGroup(token.OriginalName)
-                If IsCleanroomConflictLibrary(token.OriginalName) AndAlso conflictGroups.Contains(groupName) Then
-                    If cleanroomLibSet IsNot Nothing AndAlso cleanroomLibSet.Contains(token.OriginalName) Then
-                        filtered.Add(token)
-                    Else
+                If canReplaceConflictLibs AndAlso IsCleanroomConflictLibrary(token.OriginalName) Then
+                    Dim conflictKey As String = GetLibraryGroupArtifactKey(token.OriginalName)
+                    If cleanroomConflictKeys.Contains(conflictKey) AndAlso Not cleanroomLibSet.Contains(token.OriginalName) Then
                         Log($"[Minecraft] Cleanroom 替换冲突库：{token.OriginalName}", LogLevel.Debug)
+                        Continue For
                     End If
-                Else
-                    filtered.Add(token)
                 End If
+                filtered.Add(token)
             Next
             result = filtered
         End If
-        If cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any Then
-            Dim ordered As New List(Of McLibToken)
-            Dim remaining As New List(Of McLibToken)(result)
-            For Each libName In cleanroomLibOrder
-                Dim token = remaining.FirstOrDefault(Function(t) String.Equals(t.OriginalName, libName, StringComparison.OrdinalIgnoreCase))
-                If token Is Nothing Then Continue For
-                ordered.Add(token)
-                remaining.Remove(token)
+        If hasCleanroomLibList Then
+            Dim tokensByName As New Dictionary(Of String, List(Of McLibToken))(StringComparer.OrdinalIgnoreCase)
+            For Each token In result
+                If token Is Nothing OrElse String.IsNullOrWhiteSpace(token.OriginalName) Then Continue For
+                Dim tokenList As List(Of McLibToken) = Nothing
+                If Not tokensByName.TryGetValue(token.OriginalName, tokenList) Then
+                    tokenList = New List(Of McLibToken)
+                    tokensByName.Add(token.OriginalName, tokenList)
+                End If
+                tokenList.Add(token)
             Next
-            ordered.AddRange(remaining)
+
+            Dim ordered As New List(Of McLibToken)(result.Count)
+            Dim movedNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For Each libName In cleanroomLibOrder
+                If String.IsNullOrWhiteSpace(libName) OrElse Not movedNames.Add(libName) Then Continue For
+                Dim tokenList As List(Of McLibToken) = Nothing
+                If Not tokensByName.TryGetValue(libName, tokenList) Then Continue For
+                ordered.AddRange(tokenList)
+            Next
+            For Each token In result
+                If token Is Nothing Then Continue For
+                If token.OriginalName IsNot Nothing AndAlso movedNames.Contains(token.OriginalName) Then Continue For
+                ordered.Add(token)
+            Next
             result = ordered
         End If
 
@@ -2052,13 +2076,38 @@ OnLoaded:
         End Try
     End Function
     ''' <summary>
-    ''' 获取支持库的 Group 名称。
+    ''' 是否需要应用 Cleanroom 依赖库崩溃修复（#1402）。
     ''' </summary>
-    Private Function GetLibraryGroup(originalName As String) As String
-        If String.IsNullOrWhiteSpace(originalName) Then Return ""
-        Dim parts = originalName.Split(":"c)
-        If parts.Length < 1 Then Return ""
-        Return parts(0).ToLowerInvariant()
+    Private Function ShouldFixCleanroomLibCrash(instance As McInstance) As Boolean
+        If instance Is Nothing OrElse Not instance.Info.HasCleanroom Then Return False
+
+        Dim cleanroomVersion As String = instance.Info.Cleanroom
+        If String.IsNullOrWhiteSpace(cleanroomVersion) OrElse cleanroomVersion = "未知版本" Then Return True
+
+        Dim major As Integer = 0
+        Dim minor As Integer = 0
+        If Not TryParseVersionPrefix(cleanroomVersion, major, minor) Then Return True
+
+        If major > 0 Then Return True
+        Return minor >= 3
+    End Function
+    ''' <summary>
+    ''' 尝试解析形如 1.2 或 1.2.3（可带 -alpha/+build）的版本前缀。
+    ''' </summary>
+    Private Function TryParseVersionPrefix(versionText As String, ByRef major As Integer, ByRef minor As Integer) As Boolean
+        major = 0
+        minor = 0
+        If String.IsNullOrWhiteSpace(versionText) Then Return False
+
+        Dim trimmed As String = versionText.Trim()
+        Dim cutIndex As Integer = trimmed.IndexOfAny(New Char() {"-"c, "+"c})
+        If cutIndex >= 0 Then trimmed = trimmed.Substring(0, cutIndex)
+        Dim parts = trimmed.Split("."c)
+        If parts.Length < 2 Then Return False
+
+        major = Val(parts(0))
+        minor = Val(parts(1))
+        Return True
     End Function
     ''' <summary>
     ''' 判断是否为 Cleanroom 需要替换的冲突支持库。
@@ -2082,16 +2131,25 @@ OnLoaded:
         Return False
     End Function
     ''' <summary>
-    ''' 获取 Cleanroom 需要替换的冲突支持库 Group 列表。
+    ''' 获取支持库的 Group:Artifact 键（不包含版本号）。
     ''' </summary>
-    Private Function GetCleanroomConflictGroups(cleanroomLibSet As HashSet(Of String)) As HashSet(Of String)
+    Private Function GetLibraryGroupArtifactKey(originalName As String) As String
+        If String.IsNullOrWhiteSpace(originalName) Then Return ""
+        Dim parts = originalName.Split(":"c)
+        If parts.Length < 2 Then Return ""
+        Return (parts(0) & ":" & parts(1)).ToLowerInvariant()
+    End Function
+    ''' <summary>
+    ''' 获取 Cleanroom 需要替换的冲突支持库 Key 列表（Group:Artifact）。
+    ''' </summary>
+    Private Function GetCleanroomConflictKeys(cleanroomLibSet As HashSet(Of String)) As HashSet(Of String)
         Dim result As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         If cleanroomLibSet Is Nothing Then Return result
         For Each libName In cleanroomLibSet
             If Not IsCleanroomConflictLibrary(libName) Then Continue For
-            Dim groupName As String = GetLibraryGroup(libName)
-            If String.IsNullOrWhiteSpace(groupName) Then Continue For
-            result.Add(groupName)
+            Dim key As String = GetLibraryGroupArtifactKey(libName)
+            If String.IsNullOrWhiteSpace(key) Then Continue For
+            result.Add(key)
         Next
         Return result
     End Function
