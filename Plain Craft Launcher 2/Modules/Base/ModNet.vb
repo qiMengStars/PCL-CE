@@ -1009,7 +1009,9 @@ StartThread:
                 ' 使用 HttpClient 替代 HttpWebRequest
                 Dim request As New HttpRequestMessage(HttpMethod.Get, th.Source.Url)
                 SecretHeadersSign(th.Source.Url, request, UseBrowserUserAgent, Me.CustomUserAgent)
-                If Not th.IsFirstThread OrElse th.DownloadStart <> 0 Then request.Headers.Range = New Headers.RangeHeaderValue(th.DownloadStart, Nothing)
+                Dim isSingleThreadSource As Boolean = SourcesOnce.Contains(th.Source)
+                Dim isRangeRequest As Boolean = Not isSingleThreadSource AndAlso (Not th.IsFirstThread OrElse th.DownloadStart <> 0)
+                If isRangeRequest Then request.Headers.Range = New Headers.RangeHeaderValue(th.DownloadStart, Nothing)
                 Using cts As New CancellationTokenSource
                     cts.CancelAfter(Timeout)
                     '连接阶段超时检测：如果连接耗时过长，提前抛出异常
@@ -1028,8 +1030,15 @@ StartThread:
                                 Log($"[Download] {LocalName} {th.Uuid}#：检测到下载源重定向到 HTTP 协议，下载流量可能存在安全问题")
                             End If
                         End If
+                        Dim responseStatusCode As HttpStatusCode = response.StatusCode
                         '文件大小校验
                         ContentLength = response.Content.Headers.ContentLength.GetValueOrDefault(-1)
+                        If isRangeRequest Then
+                            Dim contentRange = response.Content.Headers.ContentRange
+                            If responseStatusCode <> HttpStatusCode.PartialContent OrElse contentRange Is Nothing Then
+                                GoTo NotSupportRange
+                            End If
+                        End If
                         If ContentLength = -1 Then
                             If FileSize > 1 Then
                                 If th.DownloadStart = 0 Then
@@ -1101,7 +1110,7 @@ NotSupportRange:
                                     SourcesOnce.Add(th.Source)
                                 End If
                             End SyncLock
-                            Throw New WebException($"该下载源不支持分段下载：Range 起始于 {th.DownloadStart}，预期 ContentLength 为 {FileSize - th.DownloadStart}，返回 ContentLength 为 {ContentLength}，总文件大小 {FileSize}")
+                            Throw New RangeNotSupportedException($"该下载源不支持分段下载：Range 起始于 {th.DownloadStart}，状态码 {CInt(responseStatusCode)}，预期 ContentLength 为 {FileSize - th.DownloadStart}，返回 ContentLength 为 {ContentLength}，总文件大小 {FileSize}")
                         ElseIf Not FileSize - th.DownloadStart = ContentLength Then
                             Throw New WebException($"获取到的分段大小不一致：Range 起始于 {th.DownloadStart}，预期 ContentLength 为 {FileSize - th.DownloadStart}，返回 ContentLength 为 {ContentLength}，总文件大小 {FileSize}")
                         End If
@@ -1243,7 +1252,10 @@ SourceBreak:
             th.State = NetState.Interrupted
             th.Source.Ex = ex
             '根据情况判断，是否在多线程下禁用下载源（连续错误过多，或不支持断点续传）
-            Dim IsRangeNotSupported As Boolean = TypeOf ex Is RangeNotSupportedException OrElse ex.Message.Contains("(416)")
+            Dim httpFailed = TryCast(ex, HttpRequestFailedException)
+            Dim IsRangeNotSupported As Boolean = TypeOf ex Is RangeNotSupportedException OrElse
+                                                (httpFailed IsNot Nothing AndAlso httpFailed.StatusCode = HttpStatusCode.RequestedRangeNotSatisfiable) OrElse
+                                                ex.Message.Contains("(416)")
             If isMergeFailure OrElse IsRangeNotSupported OrElse
                     ex.Message.Contains("(502)") OrElse ex.Message.Contains("(404)") OrElse
                     ex.Message.Contains("未能解析") OrElse ex.Message.Contains("无返回数据") OrElse ex.Message.Contains("空间不足") OrElse
