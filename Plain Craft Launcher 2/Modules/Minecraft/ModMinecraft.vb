@@ -1937,10 +1937,31 @@ OnLoaded:
         Log("[Minecraft] 获取支持库列表：" & Instance.Name)
         Dim cleanroomLibOrder As List(Of String) = GetCleanroomLibraryNames(Instance)
         Dim cleanroomLibSet As HashSet(Of String) = Nothing
-        If cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any Then
+        If cleanroomLibOrder IsNot Nothing Then
             cleanroomLibSet = New HashSet(Of String)(cleanroomLibOrder, StringComparer.OrdinalIgnoreCase)
         End If
         Dim result = McLibListGetWithJson(Instance.JsonObject, TargetInstance:=Instance, CleanroomPreferredLibNames:=cleanroomLibSet)
+        If Instance.Info.HasCleanroom Then
+            Dim conflictGroups = GetCleanroomConflictGroups(cleanroomLibSet)
+            Dim filtered As New List(Of McLibToken)
+            For Each token In result
+                If IsCleanroomExcludedFile(token) Then
+                    Log($"[Minecraft] Cleanroom 排除支持库：{token.LocalPath}", LogLevel.Debug)
+                    Continue For
+                End If
+                Dim groupName As String = GetLibraryGroup(token.OriginalName)
+                If IsCleanroomConflictLibrary(token.OriginalName) AndAlso conflictGroups.Contains(groupName) Then
+                    If cleanroomLibSet IsNot Nothing AndAlso cleanroomLibSet.Contains(token.OriginalName) Then
+                        filtered.Add(token)
+                    Else
+                        Log($"[Minecraft] Cleanroom 替换冲突库：{token.OriginalName}", LogLevel.Debug)
+                    End If
+                Else
+                    filtered.Add(token)
+                End If
+            Next
+            result = filtered
+        End If
         If cleanroomLibOrder IsNot Nothing AndAlso cleanroomLibOrder.Any Then
             Dim ordered As New List(Of McLibToken)
             Dim remaining As New List(Of McLibToken)(result)
@@ -2016,16 +2037,76 @@ OnLoaded:
             Dim libs = TryCast(cleanroomJson("libraries"), JArray)
             If libs Is Nothing Then Return Nothing
             Dim result As New List(Of String)
-            For Each lib As JObject In libs.Children
-                Dim name = lib("name")?.ToString
+            For Each libToken As JToken In libs
+                Dim library As JObject = TryCast(libToken, JObject)
+                If library Is Nothing Then Continue For
+                Dim nameToken = library("name")
+                Dim name As String = If(nameToken Is Nothing, Nothing, nameToken.ToString())
                 If String.IsNullOrWhiteSpace(name) Then Continue For
                 result.Add(name)
             Next
             Return result
         Catch ex As Exception
-            Log(ex, $"[Minecraft] 读取 Cleanroom 库列表失败（{If(instance?.Name, "Nothing")}）", LogLevel.Debug)
+            Log(ex, $"[Minecraft] 读取 Cleanroom 库列表失败（{If(instance Is Nothing, "Nothing", instance.Name)}）", LogLevel.Debug)
             Return Nothing
         End Try
+    End Function
+    ''' <summary>
+    ''' 获取支持库的 Group 名称。
+    ''' </summary>
+    Private Function GetLibraryGroup(originalName As String) As String
+        If String.IsNullOrWhiteSpace(originalName) Then Return ""
+        Dim parts = originalName.Split(":"c)
+        If parts.Length < 1 Then Return ""
+        Return parts(0).ToLowerInvariant()
+    End Function
+    ''' <summary>
+    ''' 判断是否为 Cleanroom 需要替换的冲突支持库。
+    ''' </summary>
+    Private Function IsCleanroomConflictLibrary(originalName As String) As Boolean
+        If String.IsNullOrWhiteSpace(originalName) Then Return False
+        Dim parts = originalName.Split(":"c)
+        If parts.Length < 2 Then Return False
+        Dim groupName = parts(0).ToLowerInvariant()
+        Dim artifactName = parts(1).ToLowerInvariant()
+        Select Case groupName
+            Case "org.lwjgl.lwjgl"
+                Return artifactName = "lwjgl" OrElse artifactName = "lwjgl_util" OrElse artifactName = "lwjgl-platform"
+            Case "net.java.jinput"
+                Return artifactName = "jinput"
+            Case "net.java.jutils"
+                Return artifactName = "jutils"
+            Case "net.java.dev.jna"
+                Return artifactName = "jna" OrElse artifactName = "jna-platform"
+        End Select
+        Return False
+    End Function
+    ''' <summary>
+    ''' 获取 Cleanroom 需要替换的冲突支持库 Group 列表。
+    ''' </summary>
+    Private Function GetCleanroomConflictGroups(cleanroomLibSet As HashSet(Of String)) As HashSet(Of String)
+        Dim result As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        If cleanroomLibSet Is Nothing Then Return result
+        For Each libName In cleanroomLibSet
+            If Not IsCleanroomConflictLibrary(libName) Then Continue For
+            Dim groupName As String = GetLibraryGroup(libName)
+            If String.IsNullOrWhiteSpace(groupName) Then Continue For
+            result.Add(groupName)
+        Next
+        Return result
+    End Function
+    ''' <summary>
+    ''' 判断是否为 Cleanroom 需要移除的支持库文件。
+    ''' </summary>
+    Private Function IsCleanroomExcludedFile(token As McLibToken) As Boolean
+        If token Is Nothing Then Return False
+        Dim fileName = System.IO.Path.GetFileName(token.LocalPath)
+        If String.IsNullOrWhiteSpace(fileName) Then Return False
+        Select Case fileName.ToLowerInvariant()
+            Case "lwjgl-2.9.4-nightly-20150209.jar", "platform-3.4.0.jar", "icu4j-core-mojang-51.2.jar"
+                Return True
+        End Select
+        Return False
     End Function
     ''' <summary>
     ''' 获取 Minecraft 某一实例忽视继承的支持库列表，即结果中没有继承项。
