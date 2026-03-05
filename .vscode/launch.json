@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "PCL2CE Debug (x64)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build: Debug x64",
+      "program": "${workspaceFolder}/Plain Craft Launcher 2/bin/Debug/net8.0-windows/win-x64/Plain Craft Launcher 2.exe",
+      "cwd": "${workspaceFolder}/Plain Craft Launcher 2",
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    },
+    {
+      "name": "PCL2CE Release (x64, publish)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "publish: Release x64",
+      "program": "${workspaceFolder}/artifact/Plain Craft Launcher 2.exe",
+      "cwd": "${workspaceFolder}/artifact",
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: Debug x64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-c",
+        "Debug",
+        "-p:Platform=x64"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build: Debug ARM64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-c",
+        "Debug",
+        "-p:Platform=ARM64"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "publish: Release x64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-p:Configuration=Release",
+        "-p:Platform=x64",
+        "-p:DeleteExistingFiles=true",
+        "-o",
+        "artifact",
+        "--no-self-contained"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "publish: Release ARM64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-p:Configuration=Release",
+        "-p:Platform=ARM64",
+        "-p:DeleteExistingFiles=true",
+        "-o",
+        "artifact",
+        "--no-self-contained"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "publish: Beta x64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-p:Configuration=Beta",
+        "-p:Platform=x64",
+        "-p:DeleteExistingFiles=true",
+        "-o",
+        "artifact",
+        "--no-self-contained"
+      ],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "publish: Beta ARM64",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "Plain Craft Launcher 2/Plain Craft Launcher 2.vbproj",
+        "-p:Configuration=Beta",
+        "-p:Platform=ARM64",
+        "-p:DeleteExistingFiles=true",
+        "-o",
+        "artifact",
+        "--no-self-contained"
+      ],
+      "problemMatcher": "$msCompile"
+    }
+  ]
+}
